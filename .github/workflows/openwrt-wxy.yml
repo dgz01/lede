@@ -1,0 +1,141 @@
+
+
+name: OpenWrt-wxy
+# 工作流程名称
+# on:
+# # 指定自动触发工作流程文件的事件。
+#   push:
+#     branches: 
+#       - master
+#       # 只有master分支发生push事件时，才会触发 workflow。
+#   release:
+#     types: [published]
+#     # 匹配的模式是已发表
+
+# on:
+#   schedule:
+#     - cron: 0 20 * * *
+#     ＃分钟,小时,日,月,每周中的第几天
+#   release:
+#     types: [published]
+
+on: workflow_dispatch
+# 手动触发时运行工作流程
+
+jobs:
+# 任务
+  build_openwrt:
+    name: Build OpenWrt firmware
+    runs-on: ubuntu-latest
+    # 指定运行所需要的虚拟机环境。ubuntu-最新版
+    if: github.event.repository.owner.id == github.event.sender.id
+    # 只有仓库所有者，也就是你自己触发工作流事件时才有效。
+    steps:
+      - name: Checkout
+      # 第一步是获取源码
+        uses: actions/checkout@v2
+        # 使用 action 的是actions/checkout@v2
+        with:
+          ref: master
+          # 将master发送到虚拟机中
+      - name: Space cleanup
+      # 第二步是空间清理
+        env:
+        # 环境变量的 map 可用于工作流程中所有作业的步骤。
+          DEBIAN_FRONTEND: noninteractive
+          # 所有操作都是非交互式的(直接运行命令，而无需向用户请求输入)
+        run: |
+          docker rmi `docker images -q`
+          # 删除所有镜像
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d
+          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* android*
+          sudo -E apt-get update
+          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig libtinfo5
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -h
+      - name: Update feeds
+      # 第三步下载更新安装feeds源中的软件包源码
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+      - name: Generate configuration file
+      # 第四步生成配置文件
+        run: |
+          rm -f ./.config*
+          # 删除.config
+          touch ./.config
+          # 创建.config
+
+          #
+          # ===============================================================
+          # 
+          # 在 cat >> .config <<EOF 到 EOF 之间粘贴你的编译配置, 需注意缩进关系
+          # 例如:
+          cat >> .config <<EOF
+
+          # 将你的.config文件的内容,复制到这里,需注意缩进关系(每行的行首添加10个空格)
+          # sed -i 's/^/          /g' ./.config
+
+          EOF
+          #
+          # ===============================================================
+          # 
+          sed -i 's/^[ \t]*//g' ./.config
+          # 清除.config文件中每一行的行首空格
+          make defconfig
+          # 检测编译环境并根据更新自动调整编译配置文件
+      - name: Make download
+      # 第五步下载所需要的库文件
+        run: |
+          make download -j8 || make download -j1 V=s
+          rm -rf $(find ./dl/ -size -1024c)
+          df -h
+      - name: Compile firmware
+      # 第六步编译固件
+        run: |
+          make -j$(nproc) || make -j1 V=s
+          echo "======================="
+          echo "Space usage:"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h ./ --max-depth=1
+          du -h /mnt/openwrt/ --max-depth=1 || true
+      - name: Prepare artifact
+      # 第七步建立存储目录
+        run: |
+          mkdir -p ./artifact/firmware
+          mkdir -p ./artifact/package
+          mkdir -p ./artifact/buildinfo
+          rm -rf $(find ./bin/targets/ -type d -name "packages")
+          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
+          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
+          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+      - name: Deliver buildinfo
+      # 第八步生成buildinfo
+        uses: actions/upload-artifact@v2
+        with:
+          name: OpenWrt_buildinfo
+          path: ./artifact/buildinfo/
+      - name: Deliver package
+      # 第九步生成
+        uses: actions/upload-artifact@v2
+        with:
+          name: OpenWrt_package
+          path: ./artifact/package/
+      - name: Deliver firmware
+      # 第十步生成
+        uses: actions/upload-artifact@v2
+        with:
+          name: OpenWrt_firmware
+          path: ./bin/targets/
+      - name: Upload release asset
+      # 第十一步生成
+        if: github.event == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.YOURTOKEN }}
+          file: ./artifact/firmware/*
+          tag: ${{ github.ref }}
+          file_glob: true
